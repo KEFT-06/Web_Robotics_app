@@ -1,0 +1,168 @@
+{
+  "name": "Sparte Robotics - AI Auto-Rigging & ROS2 Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sparte-simulation-trigger",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "e44b95de-1c39-4ab5-9a80-4dbb38be3d7d",
+      "name": "Webhook (Image/Video Input)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "webhookId": "sparte-webhook-01"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=YOUR_GEMINI_API_KEY",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "contents",
+              "value": "=[{\"parts\":[{\"text\":\"Analyze this robot image and determine its locomotion morphology. Output ONLY ONE word: TERRESTRIAL, AERIAL, or AQUATIC.\"}, {\"file_data\": {\"file_uri\": \"{{$json.body.image_url}}\", \"mime_type\": \"image/jpeg\"}}]}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2bc359c3-78f9-4d64-a63c-38379c13b355",
+      "name": "Gemini Vision (Morphology)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [360, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.meshy.ai/v1/image-to-3d",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "image_url",
+              "value": "={{$node[\"Webhook (Image/Video Input)\"].json.body.image_url}}"
+            },
+            {
+              "name": "enable_pbr",
+              "value": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4cf5d3a5-1c39-4ab5-9a80-4dbb38be3d7d",
+      "name": "Meshy AI API (Image/Video to 3D)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [360, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "const geminiText = $items(\"Gemini Vision (Morphology)\")[0].json.candidates[0].content.parts[0].text.trim().toUpperCase();\nlet morphology = 'TERRESTRIAL';\nif(geminiText.includes('AQUATIC')) morphology = 'AQUATIC';\nif(geminiText.includes('AERIAL')) morphology = 'AERIAL';\n\nconst meshUrl = $items(\"Meshy AI API (Image/Video to 3D)\")[0].json.model_urls.glb || 'https://assets.sparte.dev/default_mesh.glb';\n\n// Build URDF dynamically\nconst urdf = `<?xml version=\"1.0\"?>\\n<robot name=\"sparte_auto_bot\">\\n  <link name=\"base_link\">\\n    <visual>\\n      <geometry>\\n        <mesh filename=\"${meshUrl}\" />\\n      </geometry>\\n    </visual>\\n  </link>\\n</robot>`;\n\n// Build Gazebo World dynamically\nlet world = `<?xml version=\"1.0\" ?>\\n<sdf version=\"1.6\">\\n<world name=\"sparte_world\">\\n`;\nif (morphology === 'AQUATIC') {\n  world += `<gravity>0 0 -9.81</gravity>\\n<plugin name=\"underwater\" filename=\"libuuv_underwater.so\" />`;\n} else if (morphology === 'AERIAL') {\n  world += `<plugin name=\"wind\" filename=\"libgazebo_wind.so\"><wind_velocity_mean>5.0</wind_velocity_mean></plugin>`;\n} else {\n  world += `<model name=\"ground_plane\"><static>true</static></model>`;\n}\nworld += `\\n</world>\\n</sdf>`;\n\nreturn [{ json: { morphology, urdf, world, meshUrl } }];"
+      },
+      "id": "5da51cd6-1c39-4ab5-9a80-4dbb38be3d7d",
+      "name": "Code (URDF & Gazebo)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ros2-cluster.sparte.lan:8000/api/v1/simulation/launch",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "morphology",
+              "value": "={{ $json.morphology }}"
+            },
+            {
+              "name": "urdf_payload",
+              "value": "={{ $json.urdf }}"
+            },
+            {
+              "name": "gazebo_world",
+              "value": "={{ $json.world }}"
+            },
+            {
+              "name": "rl_algorithm",
+              "value": "PPO"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6eb6e4e7-1c39-4ab5-9a80-4dbb38be3d7d",
+      "name": "Deploy to ROS 2 (Ubuntu 22.04)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [920, 300]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook (Image/Video Input)": {
+      "main": [
+        [
+          {
+            "node": "Gemini Vision (Morphology)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Meshy AI API (Image/Video to 3D)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Vision (Morphology)": {
+      "main": [
+        [
+          {
+            "node": "Code (URDF & Gazebo)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Meshy AI API (Image/Video to 3D)": {
+      "main": [
+        [
+          {
+            "node": "Code (URDF & Gazebo)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code (URDF & Gazebo)": {
+      "main": [
+        [
+          {
+            "node": "Deploy to ROS 2 (Ubuntu 22.04)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "df1611ec-4581-4e7d-a19b-c0b7ec17c6b9",
+  "id": "sparte-n8n-pipeline"
+}
